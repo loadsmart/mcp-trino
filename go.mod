@@ -9,8 +9,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-// Metadata-only fork patch until tuannvm/oauth-mcp-proxy advertises refresh_token in discovery.
-replace github.com/tuannvm/oauth-mcp-proxy v1.2.0 => github.com/caiopavanelli/oauth-mcp-proxy v1.2.2
+// Loadsmart fork: refresh_token in discovery, plus audience request and client ID
+// binding for JumpCloud. The qa branch builds from the fork's qa branch, main from main.
+replace github.com/tuannvm/oauth-mcp-proxy v1.2.0 => github.com/loadsmart/oauth-mcp-proxy v0.0.0-20261028181522-7aa5a4a2795d
 
 require (
 	github.com/coreos/go-oidc/v3 v3.16.0 // indirect

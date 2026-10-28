@@ -39,6 +39,15 @@ type TrinoConfig struct {
 	OAuthRedirectURIs string   // OAuth redirect URIs - single URI or comma-separated list
 	OIDCScopes        []string // OIDC scopes (from OIDC_SCOPES); include offline_access for refresh tokens
 
+	// Fixed redirect mode: the provider only sees this server's callback, which proxies back to the client
+	OAuthFixedRedirectURI             string // OAuth callback URI registered with the provider
+	OAuthAllowedClientRedirectDomains string // Comma-separated domain suffixes allowed as client redirects (localhost is always allowed)
+
+	// Providers that leave "aud" empty (e.g. JumpCloud)
+	OIDCRequestAudience   bool   // Request OIDCAudience as the "audience" authorization parameter
+	OIDCSkipAudienceCheck bool   // Skip "aud" validation; requires OIDCRequiredClientID
+	OIDCRequiredClientID  string // Client ID tokens must carry in "client_id" or "azp"
+
 	// Allowlist configuration for filtering catalogs, schemas, and tables
 	AllowedCatalogs []string // List of allowed catalogs (empty means no filtering)
 	AllowedSchemas  []string // List of allowed schemas in catalog.schema format
@@ -87,6 +96,17 @@ func NewTrinoConfigWithVersion(version string) (*TrinoConfig, error) {
 			log.Println("WARNING: OAUTH_REDIRECT_URI is deprecated. Use OAUTH_ALLOWED_REDIRECT_URIS instead.")
 			oauthRedirectURIs = deprecatedURI
 		}
+	}
+
+	oauthFixedRedirectURI := resolveEnv("OAUTH_FIXED_REDIRECT_URI", "")
+	oauthAllowedClientRedirectDomains := resolveEnv("OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS", "")
+
+	oidcRequestAudience, _ := strconv.ParseBool(resolveEnv("OIDC_REQUEST_AUDIENCE", "false"))
+	oidcSkipAudienceCheck, _ := strconv.ParseBool(resolveEnv("OIDC_SKIP_AUDIENCE_CHECK", "false"))
+	oidcRequiredClientID := resolveEnv("OIDC_REQUIRED_CLIENT_ID", "")
+	if oauthEnabled && oidcSkipAudienceCheck && oidcRequiredClientID == "" {
+		// Without either check, tokens issued to any application of the issuer would be accepted
+		return nil, fmt.Errorf("OIDC_SKIP_AUDIENCE_CHECK requires OIDC_REQUIRED_CLIENT_ID")
 	}
 
 	var oidcScopes []string
@@ -173,7 +193,7 @@ func NewTrinoConfigWithVersion(version string) (*TrinoConfig, error) {
 		if oauthMode == "proxy" && oauthProvider != "hmac" && oidcClientSecret == "" {
 			log.Printf("WARNING: OIDC_CLIENT_SECRET not set for proxy mode with %s provider.", oauthProvider)
 		}
-		if oauthMode == "proxy" && oauthRedirectURIs == "" {
+		if oauthMode == "proxy" && oauthRedirectURIs == "" && oauthFixedRedirectURI == "" {
 			log.Printf("WARNING: No OAuth redirect URIs configured for proxy mode.")
 		}
 	} else {
@@ -239,6 +259,12 @@ func NewTrinoConfigWithVersion(version string) (*TrinoConfig, error) {
 		EnableImpersonation: enableImpersonation,
 		ImpersonationField:  impersonationField,
 		TrinoSource:         trinoSource,
+
+		OAuthFixedRedirectURI:             oauthFixedRedirectURI,
+		OAuthAllowedClientRedirectDomains: oauthAllowedClientRedirectDomains,
+		OIDCRequestAudience:               oidcRequestAudience,
+		OIDCSkipAudienceCheck:             oidcSkipAudienceCheck,
+		OIDCRequiredClientID:              oidcRequiredClientID,
 	}, nil
 }
 

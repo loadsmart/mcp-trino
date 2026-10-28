@@ -268,16 +268,21 @@ func trinoConfigToOAuthConfig(cfg *config.TrinoConfig) *oauth.Config {
 	}
 
 	return &oauth.Config{
-		Mode:         cfg.OAuthMode,
-		Provider:     cfg.OAuthProvider,
-		RedirectURIs: cfg.OAuthRedirectURIs,
-		Issuer:       cfg.OIDCIssuer,
-		Audience:     cfg.OIDCAudience,
-		ClientID:     cfg.OIDCClientID,
-		ClientSecret: cfg.OIDCClientSecret,
-		Scopes:       cfg.OIDCScopes,
-		ServerURL:    serverURL,
-		JWTSecret:    []byte(cfg.JWTSecret),
+		Mode:                         cfg.OAuthMode,
+		Provider:                     cfg.OAuthProvider,
+		RedirectURIs:                 cfg.OAuthRedirectURIs,
+		FixedRedirectURI:             cfg.OAuthFixedRedirectURI,
+		AllowedClientRedirectDomains: cfg.OAuthAllowedClientRedirectDomains,
+		Issuer:                       cfg.OIDCIssuer,
+		Audience:                     cfg.OIDCAudience,
+		ClientID:                     cfg.OIDCClientID,
+		ClientSecret:                 cfg.OIDCClientSecret,
+		Scopes:                       cfg.OIDCScopes,
+		ServerURL:                    serverURL,
+		JWTSecret:                    []byte(cfg.JWTSecret),
+		SkipAudienceCheck:            cfg.OIDCSkipAudienceCheck,
+		RequestAudience:              cfg.OIDCRequestAudience,
+		RequiredClientID:             cfg.OIDCRequiredClientID,
 	}
 }
 

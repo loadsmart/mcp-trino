@@ -1,0 +1,41 @@
+version: 2.1
+
+orbs:
+  sentinel: loadsmart/sentinel@1
+
+jobs:
+  # Builds docker/Dockerfile and pushes it to the de-data-mcps ECR repository as
+  # mcp-trino-<branch>. de-data-mcps owns the repository and the CircleCI project
+  # (terraform/general) and deploys mcp-trino-qa to QA, mcp-trino-main to production.
+  build-and-push:
+    docker:
+      - image: ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/lumper:latest
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    steps:
+      - checkout
+      - setup_remote_docker
+
+      - run:
+          name: Build docker image
+          command: lumper build aws --project de-data-mcps --build-arg RELEASE=${CIRCLE_TAG:-${CIRCLE_SHA1:0:8}} --tag mcp-trino-${CIRCLE_BRANCH}
+
+      - run:
+          name: Push image to registry
+          command: lumper push aws --project de-data-mcps --tag mcp-trino-${CIRCLE_BRANCH}
+
+workflows:
+  mcp_trino_image:
+    jobs:
+      - build-and-push:
+          context: org-global
+          filters:
+            branches:
+              only:
+                - main
+                - qa
+  developer-productivity:
+    jobs:
+      - sentinel/default:
+          context: org-global

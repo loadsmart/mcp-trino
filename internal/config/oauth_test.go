@@ -179,3 +179,44 @@ func TestOAuthProxyModeValidation(t *testing.T) {
 		t.Errorf("Expected OAuth enabled")
 	}
 }
+func TestOAuthJumpCloudConfiguration(t *testing.T) {
+	t.Setenv("OAUTH_ENABLED", "true")
+	t.Setenv("OAUTH_MODE", "proxy")
+	t.Setenv("OAUTH_PROVIDER", "okta")
+	t.Setenv("OAUTH_FIXED_REDIRECT_URI", "https://mcp.example.com/oauth/callback")
+	t.Setenv("OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS", "claude.ai,example.com")
+	t.Setenv("OIDC_REQUEST_AUDIENCE", "true")
+	t.Setenv("OIDC_SKIP_AUDIENCE_CHECK", "true")
+	t.Setenv("OIDC_REQUIRED_CLIENT_ID", "mcp-client")
+
+	config, err := NewTrinoConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if config.OAuthFixedRedirectURI != "https://mcp.example.com/oauth/callback" {
+		t.Errorf("OAuthFixedRedirectURI = %s", config.OAuthFixedRedirectURI)
+	}
+	if config.OAuthAllowedClientRedirectDomains != "claude.ai,example.com" {
+		t.Errorf("OAuthAllowedClientRedirectDomains = %s", config.OAuthAllowedClientRedirectDomains)
+	}
+	if !config.OIDCRequestAudience {
+		t.Error("OIDCRequestAudience = false, expected true")
+	}
+	if !config.OIDCSkipAudienceCheck {
+		t.Error("OIDCSkipAudienceCheck = false, expected true")
+	}
+	if config.OIDCRequiredClientID != "mcp-client" {
+		t.Errorf("OIDCRequiredClientID = %s, expected mcp-client", config.OIDCRequiredClientID)
+	}
+}
+
+func TestOAuthSkipAudienceCheckRequiresClientID(t *testing.T) {
+	t.Setenv("OAUTH_ENABLED", "true")
+	t.Setenv("OIDC_SKIP_AUDIENCE_CHECK", "true")
+	t.Setenv("OIDC_REQUIRED_CLIENT_ID", "")
+
+	if _, err := NewTrinoConfig(); err == nil {
+		t.Error("Expected error when OIDC_SKIP_AUDIENCE_CHECK is set without OIDC_REQUIRED_CLIENT_ID")
+	}
+}
