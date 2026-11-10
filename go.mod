@@ -11,7 +11,7 @@ require (
 
 // Loadsmart fork: refresh_token in discovery, plus audience request and client ID
 // binding for JumpCloud. The qa branch builds from the fork's qa branch, main from main.
-replace github.com/tuannvm/oauth-mcp-proxy v1.2.0 => github.com/loadsmart/oauth-mcp-proxy v0.0.0-20261028181522-7aa5a4a2795d
+replace github.com/tuannvm/oauth-mcp-proxy v1.2.0 => github.com/loadsmart/oauth-mcp-proxy v0.0.0-20261110194838-09a5030ad270
 
 require (
 	github.com/coreos/go-oidc/v3 v3.16.0 // indirect

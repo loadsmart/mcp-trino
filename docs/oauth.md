@@ -10,8 +10,8 @@ This document outlines the OAuth 2.1 authentication architecture for mcp-trino s
 
 ⚠️ **Critical Requirements:**
 
-- **Fixed Redirect Mode**: ONLY accepts localhost redirect URIs (development/testing only)
-- **Allowlist Mode**: Requires exact URI matches (production deployments)
+- **Fixed Redirect Mode**: Proxies IdP callbacks through a single server URI; client callbacks default to localhost unless `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS` is set (required for JumpCloud / production multi-client)
+- **Allowlist Mode**: Requires exact URI matches via `OAUTH_ALLOWED_REDIRECT_URIS` (when the IdP can register many callbacks)
 - **JWT_SECRET**: Must be configured for multi-pod deployments to ensure state verification consistency
 - **PKCE**: Optional but strongly recommended per OAuth 2.1 standard
 - **HTTPS**: Required for all non-localhost redirect URIs
@@ -19,7 +19,7 @@ This document outlines the OAuth 2.1 authentication architecture for mcp-trino s
 ✅ **Security Guarantees:**
 
 - HMAC-SHA256 signed state prevents tampering
-- Localhost-only restriction prevents open redirect attacks in fixed mode
+- Client redirect validation (localhost and/or allowlisted domains) prevents open redirect attacks in fixed mode
 - Defense-in-depth: Multiple independent validation layers
 - Constant-time comparison prevents timing attacks
 
@@ -30,7 +30,7 @@ The mcp-trino server implements OAuth 2.0 as a **resource server**, validating J
 ```mermaid
 graph TB
     Client[AI Client<br/>Claude Code / mcp-remote]
-    OAuth[OAuth Provider<br/>Okta / Google / Azure]
+    OAuth[OAuth Provider<br/>JumpCloud / Okta / Google / Azure]
     MCP[MCP Server<br/>mcp-trino]
     Trino[Trino Database<br/>Any Auth Type]
 
@@ -113,8 +113,8 @@ sequenceDiagram
 - ✅ Works with any MCP client
 - ✅ No client-side OAuth configuration
 - ⚠️ Requires OAuth secrets in server environment
-- ⚠️ Fixed mode limited to localhost callbacks (development only)
-- ✅ Allowlist mode for production deployments
+- ✅ Fixed mode with `OAUTH_FIXED_REDIRECT_URI` + allowed client domains for IdPs that allow only one callback (JumpCloud)
+- ✅ Allowlist mode when the IdP can register many redirect URIs
 
 ```mermaid
 sequenceDiagram
@@ -153,44 +153,51 @@ sequenceDiagram
 | `OIDC_AUDIENCE` | Required | Required | Token audience |
 | `OIDC_CLIENT_ID` | ❌ Not used | ✅ Required | OAuth app client ID |
 | `OIDC_CLIENT_SECRET` | ❌ Not used | ⚠️ Public: No<br/>Confidential: Yes | OAuth app secret |
-| `OIDC_SCOPES` | Optional | Optional | Space-separated scopes; add `offline_access` for refresh tokens (Okta/Azure) |
-| `OAUTH_REDIRECT_URI` | ❌ Not used | ✅ Required | Fixed or allowlist URIs |
+| `OIDC_SCOPES` | Optional | Optional | Space-separated scopes; include `offline_access` for refresh tokens (JumpCloud/Okta/Azure) |
+| `OIDC_REQUEST_AUDIENCE` | Optional | Optional | When `true`, send `OIDC_AUDIENCE` as the authorize `audience` param (required for JumpCloud) |
+| `OAUTH_ALLOWED_REDIRECT_URIS` | ❌ Not used | ✅ Required\* | Comma-separated allowlist of client redirect URIs (`OAUTH_REDIRECT_URI` is deprecated) |
+| `OAUTH_FIXED_REDIRECT_URI` | ❌ Not used | Optional | Single IdP callback URI; proxies back to the client redirect |
+| `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS` | ❌ Not used | Optional | With fixed redirect: allow non-localhost client callbacks by domain suffix (e.g. `claude.ai,vscode.dev`) |
+
+\*In fixed-redirect deployments, set `OAUTH_FIXED_REDIRECT_URI` (and usually allowed client domains). Allowlist mode uses `OAUTH_ALLOWED_REDIRECT_URIS`.
 
 ### Redirect URI Configuration Modes
 
-**Fixed Redirect Mode (Single URI):**
+**Fixed Redirect Mode (JumpCloud / single IdP callback):**
 
-- Configuration: `OAUTH_REDIRECT_URI=https://mcp-server.com/oauth/callback` (no commas)
-- Behavior: Server uses fixed URI with OAuth provider, proxies callback to client
-- Client URIs: **MUST be localhost only** (localhost, 127.0.0.1, ::1)
+- Configuration:
+  - `OAUTH_FIXED_REDIRECT_URI=https://mcp-trino.example.com/oauth/callback`
+  - `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS=claude.ai,vscode.dev,...` (optional; without this, only localhost client callbacks)
+- Behavior: Server registers one URI with the IdP, then proxies the callback to the client
+- Client URIs: localhost **or** a host matching an allowed domain suffix
 - State Handling: HMAC-signed to prevent tampering
-- Use Case: Development tools (MCP Inspector, mcp-remote on localhost)
-- Security: Localhost-only prevents open redirect attacks
+- Use Case: JumpCloud (rejects localhost IdP callbacks; only one redirect URI), multi-client production
+- Security: Domain allowlist + HMAC state prevent open redirects
 
 **Allowlist Mode (Multiple URIs):**
 
-- Configuration: `OAUTH_REDIRECT_URI=https://app1.com/cb,https://app2.com/cb` (comma-separated)
-- Behavior: Direct OAuth flow, no proxy
+- Configuration: `OAUTH_ALLOWED_REDIRECT_URIS=https://app1.com/cb,https://app2.com/cb`
+- Behavior: Direct OAuth flow when the IdP can register every callback
 - Client URIs: Must exactly match one URI in allowlist
 - State Handling: Standard OAuth state (no signing needed)
-- Use Case: Production deployments with known redirect URIs
+- Use Case: Providers that allow many redirect URIs
 - Security: Exact match prevents open redirect attacks
 
 **Security Default (Empty):**
 
-- Configuration: `OAUTH_REDIRECT_URI=` (empty or not set)
+- Configuration: no fixed URI and empty allowlist
 - Behavior: Rejects all redirect URIs
 - Use Case: Fail-closed security when OAuth not properly configured
 
 ```mermaid
 flowchart TD
-    Config{OAUTH_REDIRECT_URI<br/>Configuration}
+    Config{Redirect configuration}
 
-    Config -->|Single URI<br/>No commas| Fixed[Fixed Redirect Mode<br/>Localhost Only]
-    Config -->|Multiple URIs<br/>Comma-separated| Allowlist[Allowlist Mode<br/>Production]
-    Config -->|Empty| Reject[Reject All<br/>Security Default]
+    Config -->|OAUTH_FIXED_REDIRECT_URI set| Fixed[Fixed Redirect Mode<br/>IdP single callback]
+    Config -->|OAUTH_ALLOWED_REDIRECT_URIS<br/>Comma-separated| Allowlist[Allowlist Mode]
+    Config -->|Neither| Reject[Reject All<br/>Security Default]
 
-    Fixed --> F1[✓ Server URI to provider<br/>✓ Client URI must be localhost<br/>✓ HMAC-signed state proxy]
+    Fixed --> F1[✓ Server URI to IdP<br/>✓ Client localhost or allowed domains<br/>✓ HMAC-signed state proxy]
     Allowlist --> A1[✓ Direct OAuth flow<br/>✓ Exact match required<br/>✓ No state signing]
     Reject --> R1[✗ All requests rejected]
 
@@ -201,6 +208,21 @@ flowchart TD
     style A1 fill:#e1f5ff
     style R1 fill:#ffcdd2
 ```
+
+### JumpCloud (SSO) checklist
+
+JumpCloud OIDC apps typically allow **one** redirect URI and omit `aud` unless requested. Production mcp-trino proxy mode should set:
+
+| Variable | Example / notes |
+|----------|-----------------|
+| `OAUTH_MODE` | `proxy` |
+| `OAUTH_FIXED_REDIRECT_URI` | `https://mcp-trino.<env>.loadsmart.io/oauth/callback` |
+| `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS` | `claude.ai,vscode.dev,ai.<env>loadsmart.io,...` |
+| `OIDC_SCOPES` | `openid email profile offline_access` (enables refresh tokens) |
+| `OIDC_REQUEST_AUDIENCE` | `true` |
+| `OIDC_AUDIENCE` | MCP resource URL (same audience requested on authorize) |
+
+Silent refresh: discovery advertises `refresh_token`; `/oauth/token` proxies `grant_type=refresh_token` to JumpCloud. Refresh-token lifetime is controlled by the IdP app (platform default 12h)—raising it is a Terraform/IdP policy change, not an mcp-trino setting. When JumpCloud omits a new refresh token on refresh, oauth-mcp-proxy echoes the request refresh token so clients keep a usable RT.
 
 ## Security Architecture
 
@@ -679,11 +701,11 @@ This ensures all pods use the same HMAC signing key for state parameters.
 - Solution: Deploy version with fixed JWKS path
 - Verification: Test `/.well-known/jwks.json` returns public keys
 
-**"Fixed redirect mode only allows localhost"**
+**"Fixed redirect mode only allows localhost" / client redirect rejected**
 
-- Cause: Trying to use production redirect URI in fixed mode
-- Solution: Either use localhost callback OR switch to allowlist mode
-- Verification: Check OAUTH_REDIRECT_URI contains comma (allowlist) or is single URL (fixed)
+- Cause: Client callback host is neither localhost nor in `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS`
+- Solution: Add the client domain suffix to `OAUTH_ALLOWED_CLIENT_REDIRECT_DOMAINS`, or use allowlist mode if the IdP supports many redirects
+- Verification: Confirm `OAUTH_FIXED_REDIRECT_URI` matches the JumpCloud app callback and domains include the client host
 
 **"HTTPS required for OAuth endpoints"**
 
@@ -701,7 +723,7 @@ flowchart TD
     Error -->|403 Invalid session| Fix2[Check OAUTH_MODE=proxy<br/>Verify metadata endpoint]
     Error -->|JWKS error| Fix3[Deploy version<br/>with fixed JWKS URL]
     Error -->|HTTPS required| Fix4[Configure ingress<br/>X-Forwarded-Proto]
-    Error -->|Localhost only| Fix5[Use localhost callback<br/>OR allowlist mode]
+    Error -->|Localhost only| Fix5[Allow client domain<br/>OR use localhost callback]
 
     Fix1 --> Test[Redeploy & Test]
     Fix2 --> Test
