@@ -18,24 +18,37 @@ import (
 	"github.com/tuannvm/mcp-trino/internal/trino"
 )
 
+// tokenValidator validates a bearer token. *oauth.Server satisfies it; tests
+// substitute a fake.
+type tokenValidator interface {
+	ValidateTokenCached(ctx context.Context, token string) (*oauth.User, error)
+}
+
 // Server represents the MCP server with all components
 type Server struct {
 	mcpServer   *mcpserver.MCPServer
 	config      *config.TrinoConfig
 	version     string
-	oauthServer *oauth.Server // oauth-mcp-proxy Server (nil if OAuth disabled)
+	oauthServer *oauth.Server  // oauth-mcp-proxy Server (nil if OAuth disabled)
+	validator   tokenValidator // validates bearer tokens on /mcp and /sse (nil if OAuth disabled or setup failed)
 }
 
 // NewServer creates a new MCP server instance with all components
 func NewServer(trinoClient *trino.Client, trinoConfig *config.TrinoConfig, version string) *Server {
 	mcpServer, oauthServer := createMCPServer(trinoClient, trinoConfig, version)
 
-	return &Server{
+	s := &Server{
 		mcpServer:   mcpServer,
 		config:      trinoConfig,
 		version:     version,
 		oauthServer: oauthServer,
 	}
+	// Assign only a non-nil server: a nil *oauth.Server in the interface would
+	// not compare equal to nil and would panic on first use.
+	if oauthServer != nil {
+		s.validator = oauthServer
+	}
+	return s
 }
 
 func createMCPServer(trinoClient *trino.Client, trinoConfig *config.TrinoConfig, version string) (*mcpserver.MCPServer, *oauth.Server) {
@@ -181,27 +194,29 @@ func (s *Server) createMCPHandler(streamableServer *mcpserver.StreamableHTTPServ
 		log.Printf("MCP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 
 		if s.config.OAuthEnabled {
+			// OAuth is on but its server failed to start: fail closed rather
+			// than serve tools without authentication.
+			if s.validator == nil {
+				log.Printf("ERROR: OAuth enabled but not initialized, rejecting request")
+				http.Error(w, "authentication unavailable", http.StatusServiceUnavailable)
+				return
+			}
+
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 				log.Printf("OAuth: No bearer token provided, returning 401 with discovery info")
+				s.writeUnauthorized(w, "Missing or invalid access token")
+				return
+			}
 
-				mcpHost := getEnv("MCP_HOST", "localhost")
-				mcpPort := getEnv("MCP_PORT", "8080")
-				scheme := s.getScheme()
-				mcpURL := getEnv("MCP_URL", fmt.Sprintf("%s://%s:%s", scheme, mcpHost, mcpPort))
-
-				w.Header().Add("WWW-Authenticate", `Bearer realm="OAuth", error="invalid_token", error_description="Missing or invalid access token"`)
-				w.Header().Add("WWW-Authenticate", fmt.Sprintf(`resource_metadata="%s/.well-known/oauth-protected-resource"`, mcpURL))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-
-				errorResponse := map[string]string{
-					"error":             "invalid_token",
-					"error_description": "Missing or invalid access token",
-				}
-				if err := json.NewEncoder(w).Encode(errorResponse); err != nil {
-					log.Printf("Error encoding OAuth error response: %v", err)
-				}
+			// Validate here, not only in the tool middleware. A tool-level
+			// failure is a JSON-RPC error inside HTTP 200, so the client never
+			// learns its access token expired and never uses its refresh token.
+			// A 401 makes it refresh and retry (DATAENG-3825).
+			token := strings.TrimSpace(authHeader[len("Bearer "):])
+			if _, err := s.validator.ValidateTokenCached(r.Context(), token); err != nil {
+				log.Printf("OAuth: Bearer token rejected, returning 401: %v", err)
+				s.writeUnauthorized(w, "The access token is invalid or expired")
 				return
 			}
 
@@ -211,6 +226,27 @@ func (s *Server) createMCPHandler(streamableServer *mcpserver.StreamableHTTPServ
 		}
 
 		streamableServer.ServeHTTP(w, r)
+	}
+}
+
+// writeUnauthorized writes an RFC 6750 401 with the protected resource metadata
+// URL, which MCP clients use to discover the authorization server.
+func (s *Server) writeUnauthorized(w http.ResponseWriter, description string) {
+	mcpHost := getEnv("MCP_HOST", "localhost")
+	mcpPort := getEnv("MCP_PORT", "8080")
+	mcpURL := getEnv("MCP_URL", fmt.Sprintf("%s://%s:%s", s.getScheme(), mcpHost, mcpPort))
+
+	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Bearer realm="OAuth", error="invalid_token", error_description=%q`, description))
+	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`resource_metadata="%s/.well-known/oauth-protected-resource"`, mcpURL))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+
+	errorResponse := map[string]string{
+		"error":             "invalid_token",
+		"error_description": description,
+	}
+	if err := json.NewEncoder(w).Encode(errorResponse); err != nil {
+		log.Printf("Error encoding OAuth error response: %v", err)
 	}
 }
 
